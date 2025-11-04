@@ -23,3 +23,6 @@ processed_data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+!demo_samples/*.pdf
+!uploads/*.pdf
