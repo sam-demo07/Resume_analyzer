@@ -1,10 +1,19 @@
 import streamlit as st
 from supabase import create_client, Client
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 def get_supabase_client() -> Client:
-    url = os.getenv("VITE_SUPABASE_URL")
-    key = os.getenv("VITE_SUPABASE_SUPABASE_ANON_KEY")
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    
+    if not url or not key:
+        st.error("❌ Supabase credentials not found. Please check your .env file")
+        st.stop()
+    
     return create_client(url, key)
 
 def init_session_state():
@@ -30,23 +39,6 @@ def login_page():
         font-size: 2rem;
         margin-bottom: 2rem;
         font-weight: 700;
-    }
-    .stTextInput>div>div>input {
-        border-radius: 10px;
-        border: 2px solid rgba(255,255,255,0.2);
-        background: rgba(255,255,255,0.9);
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 10px;
-        background: linear-gradient(90deg, #f093fb 0%, #f5576c 100%);
-        border: none;
-        padding: 0.75rem;
-        font-weight: 600;
-        transition: transform 0.2s;
-    }
-    .stButton>button:hover {
-        transform: scale(1.05);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -74,15 +66,10 @@ def login_page():
                         if response.user:
                             st.session_state.user = response.user
                             st.session_state.session = response.session
-
-                            supabase.table('users').upsert({
-                                'id': response.user.id,
-                                'email': response.user.email,
-                                'updated_at': 'now()'
-                            }).execute()
-
                             st.success("Login successful!")
                             st.rerun()
+                        else:
+                            st.error("Login failed: No user returned")
                     except Exception as e:
                         st.error(f"Login failed: {str(e)}")
                 else:
@@ -112,21 +99,20 @@ def login_page():
                         })
 
                         if response.user:
-                            supabase.table('users').insert({
-                                'id': response.user.id,
-                                'email': email,
-                                'full_name': full_name
-                            }).execute()
-
-                            st.success("Account created! Please login.")
+                            st.success("Account created successfully! Please check your email for verification.")
+                        else:
+                            st.error("Sign up failed: No user returned")
                     except Exception as e:
                         st.error(f"Sign up failed: {str(e)}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
 def logout():
-    supabase = get_supabase_client()
-    supabase.auth.sign_out()
+    try:
+        supabase = get_supabase_client()
+        supabase.auth.sign_out()
+    except:
+        pass
     st.session_state.user = None
     st.session_state.session = None
     st.rerun()

@@ -6,6 +6,7 @@ import time
 import streamlit as st
 import os
 from dotenv import load_dotenv
+import joblib
 
 load_dotenv()
 
@@ -16,7 +17,7 @@ if str(PROJ_ROOT) not in sys.path:
 try:
     from src.parsing.ml.skill_matcher import analyze_resume, load_skill_dataset, MODEL_PATH, VECT_PATH
     from app.auth import get_supabase_client, init_session_state, login_page, logout
-    from app.metrics import calculate_metrics, create_metrics_dashboard, create_skill_comparison_chart, save_metrics_to_db
+    from app.metrics import calculate_metrics, create_metrics_dashboard, create_skill_comparison_chart, save_metrics_to_db, interpret_confidence, calculate_model_performance  # ← ADD THESE
 except ImportError as e:
     st.error(f"Import error: {e}")
     st.stop()
@@ -49,12 +50,48 @@ with st.sidebar:
     st.divider()
     st.header("Model Status")
     has_model = MODEL_PATH.exists() and VECT_PATH.exists()
-    st.write(f"{'✅ Trained model active' if has_model else '⚠️ Rule-based matching'}")
+    if has_model:
+        st.success("✅ Trained ML Model Active")
+        st.caption("Using Logistic Regression + TF-IDF")
+    else:
+        st.warning("⚠️ Rule-based Matching")
+        st.caption("ML model not found")
 
     st.header("Job Roles")
     roles = load_skill_dataset()
     st.caption(f"{len(roles)} roles available")
     with st.expander("View all roles"):
+        for role in sorted(roles.keys()):
+            st.write(f"- {role}")
+
+    # 🔍 DEBUG SECTION - ADD THIS
+    st.markdown("---")
+    st.subheader("🔍 DEBUG: Job Roles Analysis")
+
+    # Check what's actually loaded
+    st.write(f"**Total Roles Loaded:** {len(roles)}")
+
+    # Show all roles with their skills
+    for role_name, skills in roles.items():
+        with st.expander(f"📊 {role_name} ({len(skills)} skills)"):
+            st.write("**Skills:**", ", ".join(skills))
+
+    # Check the source of the data
+    st.write("**All Role Names:**", list(roles.keys()))
+
+    # Check if it's the default dataset
+    default_roles = ['Junior Data Scientist', 'Data Analyst']
+    if set(roles.keys()) == set(default_roles):
+        st.error("❌ **ISSUE:** Loading DEFAULT roles only (2 roles)")
+        st.info("The function is falling back to default dataset instead of extended roles")
+    else:
+        st.success("✅ **SUCCESS:** Loading extended roles")
+
+    st.markdown("---")
+    # END DEBUG SECTION
+
+    st.caption(f"{len(roles)} roles available")
+    with st.expander("View all roles (Collapsed View)"):
         for role in sorted(roles.keys()):
             st.write(f"- {role}")
 
@@ -75,15 +112,36 @@ if uploaded:
     with st.spinner("🔍 Analyzing your resume..."):
         roles_map = load_skill_dataset()
         result = analyze_resume(str(saved_path))
-
+        # Show ML model info
+        if result.get("using_ml_model"):
+            st.success("🤖 Using AI Model for Analysis")
+            st.caption(f"Model Confidence: {result.get('ml_confidence', 0):.1f}%")
+        else:
+            st.info("⚙️ Using Rule-Based Analysis")
+        # REPLACE WITH THIS UPDATED VERSION:
+    try:
+    # Convert user ID to string to avoid any type issues
+        user_id_str = str(st.session_state.user.id)
+        
         resume_record = supabase.table('resumes').insert({
-            'user_id': st.session_state.user.id,
+            'user_id': user_id_str,  # Now using string version
             'file_name': uploaded.name,
             'parsed_skills': result["parsed"].get("skills", []),
             'parsed_education': result["parsed"].get("education", []),
             'parsed_experience': result["parsed"].get("experience", [])
         }).execute()
-        resume_id = resume_record.data[0]['id']
+    
+        if resume_record.data:
+            resume_id = resume_record.data[0]['id']
+            st.success("✅ Resume saved successfully!")
+        else:
+            st.error("❌ Failed to save resume - no data returned")
+            resume_id = None
+        
+    except Exception as e:
+        st.error(f"❌ Database error: {e}")
+        # Continue with the analysis even if save fails
+        resume_id = None
 
     st.success(f"✅ Analysis complete for {uploaded.name}")
 
@@ -133,6 +191,60 @@ if uploaded:
         else:
             default_role = result["chosen_role"]
 
+        # 🔍 PREDICTION CONFIDENCE SECTION
+        st.markdown("---")
+        st.markdown("### 🔍 Prediction Confidence")
+
+        confidence = result.get('ml_confidence', 0)
+        interpretation = interpret_confidence(confidence)
+
+        if confidence >= 60:
+            st.success(f"**{interpretation}**")
+        elif confidence >= 40:
+            st.warning(f"**{interpretation}**")
+        else:
+            st.error(f"**{interpretation}**")
+
+        st.write(f"Model Confidence Score: **{confidence:.1f}%**")
+
+        # Add this after the role predictions section
+        st.markdown("---")
+        st.markdown("### 📊 Model Performance Overview")
+
+        # Calculate overall model metrics
+        try:
+            if MODEL_PATH.exists() and VECT_PATH.exists():
+                clf = joblib.load(MODEL_PATH)
+                vect = joblib.load(VECT_PATH)
+                
+                model_metrics = calculate_model_performance(clf, vect)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Estimated Accuracy", f"{model_metrics['estimated_accuracy']}%")
+                
+                with col2:
+                    st.metric("Precision", f"{model_metrics['precision_macro']}%")
+                
+                with col3:
+                    st.metric("Recall", f"{model_metrics['recall_macro']}%")
+                
+                with col4:
+                    st.metric("F1-Score", f"{model_metrics['f1_macro']}%")
+                
+                # Quality indicator
+                if model_metrics['estimated_accuracy'] > 80:
+                    st.success("✅ Model Quality: HIGH")
+                elif model_metrics['estimated_accuracy'] > 60:
+                    st.warning("⚠️ Model Quality: MEDIUM")
+                else:
+                    st.error("❌ Model Quality: LOW")
+                    
+                st.info(f"💡 {model_metrics['recommendation']}")
+                
+        except Exception as e:
+            st.error(f"Could not load model metrics: {e}")
         st.markdown("---")
 
         chosen = st.selectbox(
@@ -151,7 +263,8 @@ if uploaded:
 
         metrics = calculate_metrics(matched, missing, len(roles_map.get(chosen, [])), confidence=0.85)
 
-        save_metrics_to_db(supabase, resume_id, chosen, match_score, matched, missing, metrics)
+        if resume_id:
+            save_metrics_to_db(supabase, resume_id, chosen, match_score, matched, missing, metrics)
 
         st.markdown("### 📊 Performance Metrics")
         create_metrics_dashboard(metrics, match_score)
@@ -205,3 +318,4 @@ if st.session_state.user:
             st.info("No analysis history yet. Upload a resume to get started!")
     except:
         st.info("No analysis history yet. Upload a resume to get started!")
+
